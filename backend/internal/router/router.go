@@ -37,6 +37,8 @@ func New(cfg config.Config, db *gorm.DB, redisClient *redis.Client, logger *slog
 	inspectionRoundService := service.NewInspectionRoundService(inspectionRoundRepository, securityService)
 	defectFindingService := service.NewDefectFindingService(defectFindingRepository, securityService)
 	priorityDecisionService := service.NewPriorityDecisionService(priorityDecisionRepository, securityService)
+	// A material defect change reopens linked finalized decisions for review.
+	defectFindingService.SetChangeNotifier(priorityDecisionService)
 	bridgeAssetHandler := handler.NewBridgeAssetHandler(bridgeAssetService)
 	inspectionRoundHandler := handler.NewInspectionRoundHandler(inspectionRoundService)
 	defectFindingHandler := handler.NewDefectFindingHandler(defectFindingService)

@@ -36,12 +36,13 @@ docker compose down -v --remove-orphans
 | 桥梁资产 | `BridgeAsset` | `/api/bridges` | active, restricted, closed, retired |
 | 检查批次 | `InspectionRound` | `/api/inspections` | planned, running, review, completed |
 | 缺陷发现 | `DefectFinding` | `/api/defects` | new, verified, monitoring, mitigated, closed |
-| 优先级决定 | `PriorityDecision` | `/api/priorities` | draft → observe/restrict/urgent（终态） |
+| 优先级决定 | `PriorityDecision` | `/api/priorities` | draft → observe/restrict/urgent（终态）；关联缺陷变更时终态 → review_pending → 复核后回到终态 |
 
 - JWT 登录和 viewer/operator/reviewer/admin 四级 RBAC，后端路由与前端守卫、导航和按钮保持一致。
 - 所有状态变化使用乐观锁并写入审计日志；审计查询仅 reviewer/admin 可见。
-- 优先级决定的每次创建、草稿更新和定稿均追加不可变版本，保留证据、状态、操作者、request ID 和完整快照。
+- 优先级决定的每次创建、草稿更新、定稿、转入待复核与复核（维持/改级）均追加不可变版本，保留证据、版本类型、状态、操作者、request ID 和完整快照。
 - 优先级只能由不同于拟制人的 reviewer/admin 定稿；observe/restrict/urgent 均为不可覆盖终态。
+- 关联缺陷的风险等级或处置状态在现场被更新时，已定稿的决定自动转为 `review_pending`：旧结论继续留在历史版本，主记录展示变化原因与原定级；复核员可通过 `/api/priorities/:id/review` 维持原优先级或提交新等级，提交必须带 `expectedVersion`，旧版本会被 409 拒绝，不能覆盖他人刚完成的复核。
 - 请求 ID、结构化日志、全局错误映射和 Redis 分布式限流。
 - 提供脱敏运行配置、当前会话、审计汇总和单实体审计历史接口。
 - 业务工作台支持查询、新建、状态推进、风险标识及操作审计查看。
@@ -124,8 +125,9 @@ cd .. && docker compose config --quiet
 |---|---|---|
 | `DefectState` | `new, verified, monitoring, mitigated, closed` | `backend/internal/constants/status.go`、`frontend/src/types/status.ts` |
 | `PriorityLevel` | `observe, restrict, urgent` | `backend/internal/constants/status.go`、`frontend/src/types/status.ts` |
+| 优先级决定状态 | 额外的复核态 `review_pending`（系统触发，非人工迁移目标） | 同上 |
 
-每个实体自己的完整迁移图同样位于 `backend/internal/constants/status.go`；页面使用的状态列表位于 `frontend/src/types/status.ts`。修改状态时必须同步两处并更新对应服务测试。
+每个实体自己的完整迁移图同样位于 `backend/internal/constants/status.go`；页面使用的状态列表位于 `frontend/src/types/status.ts`。修改状态时必须同步两处并更新对应服务测试。待复核迁移图为 `PriorityDecisionReopenTransitions`，与人工定稿迁移图 `PriorityDecisionTransitions` 分离。
 
 ## 环境变量
 

@@ -33,3 +33,12 @@ type UpdatePriorityDecision struct {
 	Evidence        string    `json:"evidence" binding:"required,max=2000"`
 	RelatedCode     string    `json:"relatedCode" binding:"required,max=64"`
 }
+
+// ReviewPriorityDecision re-evaluates a decision flagged review_pending. The
+// reviewer either confirms the previous level (expectedVersion still required
+// to reject stale submissions) or submits a new level with fresh rationale.
+type ReviewPriorityDecision struct {
+	ExpectedVersion uint   `json:"expectedVersion" binding:"required"`
+	Level           string `json:"level" binding:"required,oneof=observe restrict urgent"`
+	Reason          string `json:"reason" binding:"required,min=3,max=500"`
+}

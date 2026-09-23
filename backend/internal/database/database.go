@@ -209,6 +209,7 @@ func seedPriorityDecision(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	now := time.Now().UTC()
+	reopenTime := now.Add(9 * time.Hour)
 	items := []model.PriorityDecision{
 
 		{BaseModel: model.BaseModel{Code: "PD-001", Name: "优先级决定示例一", Status: "draft", Version: 1,
@@ -225,6 +226,15 @@ func seedPriorityDecision(ctx context.Context, db *gorm.DB) error {
 			Description: "用于启动验证和主要流程演示的优先级决定记录"}, Facility: "铁路桥梁缺陷处置优先级区域3", Owner: "安全主管组",
 			Category: "复核", RiskLevel: "high", MetricValue: 37.5, MetricUnit: "score",
 			EffectiveAt: now.Add(6 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "DF-003", PreparedBy: "operator"},
+
+		// Finalized urgent, then reopened because DF-001 was updated on site.
+		{BaseModel: model.BaseModel{Code: "PD-004", Name: "优先级决定示例四", Status: "review_pending", Version: 3,
+			Description: "现场缺陷风险升级后转入待复核的优先级决定记录"}, Facility: "铁路桥梁缺陷处置优先级区域1", Owner: "运行一组",
+			Category: "重点", RiskLevel: "high", MetricValue: 68.0, MetricUnit: "score",
+			EffectiveAt: now.Add(9 * time.Hour), Evidence: "裂缝复测记录与限速观察台账", RelatedCode: "DF-001", PreparedBy: "operator",
+			LastFinalLevel: "urgent", PendingChanged: "风险等级 medium → high",
+			PendingReason: "关联缺陷 DF-001 现场更新，风险等级 medium → high，原结论转入待复核",
+			PendingSince:  &reopenTime},
 	}
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for index := range items {
@@ -233,13 +243,25 @@ func seedPriorityDecision(ctx context.Context, db *gorm.DB) error {
 				return err
 			}
 			revisions := []model.PriorityDecisionRevision{{
-				PriorityDecisionID: item.ID, Version: 1, Status: "draft", Evidence: item.Evidence,
+				PriorityDecisionID: item.ID, Version: 1, Kind: model.PriorityRevisionDraft, Status: "draft", Evidence: item.Evidence,
 				Reason: "seeded decision draft", Actor: "operator", RequestID: fmt.Sprintf("seed-%s-create", item.Code),
 				Snapshot: fmt.Sprintf(`{"code":%q,"status":"draft","evidence":%q}`, item.Code, item.Evidence), CreatedAt: now,
 			}}
-			if item.Status != "draft" {
+			if item.Code == "PD-004" {
+				revisions = append(revisions,
+					model.PriorityDecisionRevision{
+						PriorityDecisionID: item.ID, Version: 2, Kind: model.PriorityRevisionFinal, Status: "urgent", Evidence: item.Evidence,
+						Reason: "seeded independent review: urgent", Actor: "reviewer", RequestID: fmt.Sprintf("seed-%s-review", item.Code),
+						Snapshot: fmt.Sprintf(`{"code":%q,"status":"urgent","evidence":%q}`, item.Code, item.Evidence), CreatedAt: now.Add(time.Minute),
+					},
+					model.PriorityDecisionRevision{
+						PriorityDecisionID: item.ID, Version: 3, Kind: model.PriorityRevisionReopen, Status: "review_pending", Evidence: item.Evidence,
+						Reason: item.PendingReason, Actor: "operator", RequestID: fmt.Sprintf("seed-%s-reopen", item.Code),
+						Snapshot: fmt.Sprintf(`{"code":%q,"status":"review_pending","evidence":%q}`, item.Code, item.Evidence), CreatedAt: reopenTime,
+					})
+			} else if item.Status != "draft" {
 				revisions = append(revisions, model.PriorityDecisionRevision{
-					PriorityDecisionID: item.ID, Version: item.Version, Status: item.Status, Evidence: item.Evidence,
+					PriorityDecisionID: item.ID, Version: item.Version, Kind: model.PriorityRevisionFinal, Status: item.Status, Evidence: item.Evidence,
 					Reason: "seeded independent review", Actor: "reviewer", RequestID: fmt.Sprintf("seed-%s-review", item.Code),
 					Snapshot: fmt.Sprintf(`{"code":%q,"status":%q,"evidence":%q}`, item.Code, item.Status, item.Evidence), CreatedAt: now.Add(time.Minute),
 				})

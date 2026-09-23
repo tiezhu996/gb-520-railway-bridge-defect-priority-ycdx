@@ -12,12 +12,20 @@ import (
 	"github.com/blueship581/railway-bridge-defect-priority/backend/internal/repository"
 )
 
+// DefectChangeNotifier flags finalized decisions for re-review when the linked
+// defect changes on site. It is satisfied by PriorityDecisionService and kept
+// as a narrow interface to avoid coupling the two aggregates.
+type DefectChangeNotifier interface {
+	MarkDecisionsForDefectChange(context.Context, DefectChange, string, string) error
+}
+
 type DefectFindingService interface {
 	List(context.Context, dto.PageQuery) (repository.Page[model.DefectFinding], error)
 	Get(context.Context, uint) (model.DefectFinding, error)
 	Create(context.Context, dto.CreateDefectFinding, string, string) (model.DefectFinding, error)
 	Update(context.Context, uint, dto.UpdateDefectFinding, string, string) (model.DefectFinding, error)
 	Transition(context.Context, uint, dto.TransitionRequest, string, string) (model.DefectFinding, error)
+	SetChangeNotifier(DefectChangeNotifier)
 	Delete(context.Context, uint, string, string) error
 	StatusCounts(context.Context) (map[string]int64, error)
 }
@@ -25,10 +33,17 @@ type DefectFindingService interface {
 type defectFindingService struct {
 	repository repository.DefectFindingRepository
 	security   SecurityService
+	notifier   DefectChangeNotifier
 }
 
 func NewDefectFindingService(repo repository.DefectFindingRepository, security SecurityService) DefectFindingService {
 	return &defectFindingService{repository: repo, security: security}
+}
+
+// SetChangeNotifier wires the cross-aggregate re-review hook without creating
+// a constructor import cycle (priority service does not depend on this type).
+func (s *defectFindingService) SetChangeNotifier(notifier DefectChangeNotifier) {
+	s.notifier = notifier
 }
 
 func (s *defectFindingService) List(ctx context.Context, query dto.PageQuery) (repository.Page[model.DefectFinding], error) {
@@ -66,6 +81,8 @@ func (s *defectFindingService) Update(ctx context.Context, id uint, input dto.Up
 	if err != nil {
 		return model.DefectFinding{}, err
 	}
+	beforeStatus := current.Status
+	riskBefore := current.RiskLevel
 	if err := validateDefectFindingBusinessFields(current.Code, input.Name, input.Facility, input.Owner); err != nil {
 		return model.DefectFinding{}, err
 	}
@@ -85,7 +102,13 @@ func (s *defectFindingService) Update(ctx context.Context, id uint, input dto.Up
 	if err := s.repository.Update(ctx, id, input.ExpectedVersion, &current); err != nil {
 		return model.DefectFinding{}, fmt.Errorf("update 缺陷发现: %w", err)
 	}
-	_ = s.security.Audit(ctx, actor, requestID, "update", "DefectFinding", id, current.Status, current.Status, "updated business fields")
+	_ = s.security.Audit(ctx, actor, requestID, "update", "DefectFinding", id, beforeStatus, beforeStatus, "updated business fields")
+	if err := s.notifyDecisionReview(ctx, current, DefectChange{
+		DefectCode: current.Code, RiskBefore: riskBefore, RiskAfter: current.RiskLevel,
+		StatusBefore: beforeStatus, StatusAfter: beforeStatus,
+	}, actor, requestID); err != nil {
+		return model.DefectFinding{}, err
+	}
 	return s.repository.Get(ctx, id)
 }
 
@@ -107,6 +130,12 @@ func (s *defectFindingService) Transition(ctx context.Context, id uint, input dt
 	}
 	if err := s.security.Audit(ctx, actor, requestID, "transition", "DefectFinding", id, before, target, input.Reason); err != nil {
 		return model.DefectFinding{}, fmt.Errorf("persist transition audit: %w", err)
+	}
+	if err := s.notifyDecisionReview(ctx, current, DefectChange{
+		DefectCode: current.Code, RiskBefore: current.RiskLevel, RiskAfter: current.RiskLevel,
+		StatusBefore: before, StatusAfter: target,
+	}, actor, requestID); err != nil {
+		return model.DefectFinding{}, err
 	}
 	return s.repository.Get(ctx, id)
 }
@@ -131,4 +160,17 @@ func validateDefectFindingBusinessFields(code, name, facility, owner string) err
 		return ErrInvalidInput
 	}
 	return nil
+}
+
+// notifyDecisionReview propagates a material on-site defect change to linked
+// priority decisions. It is a no-op when no notifier is wired (e.g. focused
+// unit tests).
+func (s *defectFindingService) notifyDecisionReview(ctx context.Context, defect model.DefectFinding, change DefectChange, actor, requestID string) error {
+	if s.notifier == nil {
+		return nil
+	}
+	if change.RiskBefore == change.RiskAfter && change.StatusBefore == change.StatusAfter {
+		return nil
+	}
+	return s.notifier.MarkDecisionsForDefectChange(ctx, change, actor, requestID)
 }

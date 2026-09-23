@@ -47,12 +47,29 @@ var DefectFindingTransitions = map[string]map[string]bool{
 	"closed":     {"mitigated": true},
 }
 
+// PriorityDecisionTransitions only models externally requested moves. Decisions
+// are reopened to review_pending by the system when the linked defect changes,
+// never by a direct transition call, so review_pending stays out of this graph.
 var PriorityDecisionTransitions = map[string]map[string]bool{
 	"draft":    {"observe": true, "restrict": true, "urgent": true},
 	"observe":  {},
 	"restrict": {},
 	"urgent":   {},
 }
+
+// PriorityDecisionReopenTransitions is the system-driven graph: a finalized
+// decision is flagged review_pending, and a reviewer re-confirms one of the
+// three priority levels. review_pending loops back to itself on purpose: a
+// second defect change while a review is still pending refreshes the reason
+// without leaving the pending state.
+var PriorityDecisionReopenTransitions = map[string]map[string]bool{
+	"observe":        {"review_pending": true},
+	"restrict":       {"review_pending": true},
+	"urgent":         {"review_pending": true},
+	"review_pending": {"review_pending": true, "observe": true, "restrict": true, "urgent": true},
+}
+
+const PriorityDecisionReviewPending = "review_pending"
 
 func CanTransition(graph map[string]map[string]bool, from, to string) bool {
 	targets, exists := graph[from]

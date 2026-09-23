@@ -13,6 +13,7 @@ import (
 type PriorityDecisionRepository interface {
 	List(context.Context, dto.PageQuery) (Page[model.PriorityDecision], error)
 	Get(context.Context, uint) (model.PriorityDecision, error)
+	ListFinalizedByRelatedCode(context.Context, string) ([]model.PriorityDecision, error)
 	CreateWithRevision(context.Context, *model.PriorityDecision, *model.PriorityDecisionRevision) error
 	UpdateWithRevision(context.Context, uint, uint, *model.PriorityDecision, *model.PriorityDecisionRevision) error
 	Delete(context.Context, uint) error
@@ -55,6 +56,13 @@ func (r *priorityDecisionRepository) Get(ctx context.Context, id uint) (model.Pr
 		return tx.Order("version ASC")
 	}).First(&item, id).Error
 	return item, err
+}
+func (r *priorityDecisionRepository) ListFinalizedByRelatedCode(ctx context.Context, relatedCode string) ([]model.PriorityDecision, error) {
+	items := make([]model.PriorityDecision, 0)
+	err := r.db.WithContext(ctx).
+		Where("UPPER(related_code) = ? AND status <> ?", strings.ToUpper(strings.TrimSpace(relatedCode)), model.PriorityDecisionInitialStatus).
+		Order("id ASC").Find(&items).Error
+	return items, err
 }
 func (r *priorityDecisionRepository) CreateWithRevision(ctx context.Context, item *model.PriorityDecision, revision *model.PriorityDecisionRevision) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
