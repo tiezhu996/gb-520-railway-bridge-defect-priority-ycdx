@@ -25,6 +25,15 @@ const (
 
 var AllPriorityLevel = []string{"observe", "restrict", "urgent"}
 
+func AllPriorityLevelContains(level string) bool {
+	for _, candidate := range AllPriorityLevel {
+		if candidate == level {
+			return true
+		}
+	}
+	return false
+}
+
 var BridgeAssetTransitions = map[string]map[string]bool{
 	"active":     {"restricted": true, "closed": true},
 	"restricted": {"closed": true, "retired": true, "active": true},
@@ -48,10 +57,11 @@ var DefectFindingTransitions = map[string]map[string]bool{
 }
 
 var PriorityDecisionTransitions = map[string]map[string]bool{
-	"draft":    {"observe": true, "restrict": true, "urgent": true},
-	"observe":  {},
-	"restrict": {},
-	"urgent":   {},
+	"draft":          {"observe": true, "restrict": true, "urgent": true},
+	"observe":        {"pending_review": true},
+	"restrict":       {"pending_review": true},
+	"urgent":         {"pending_review": true},
+	"pending_review": {"observe": true, "restrict": true, "urgent": true},
 }
 
 func CanTransition(graph map[string]map[string]bool, from, to string) bool {

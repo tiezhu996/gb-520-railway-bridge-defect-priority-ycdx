@@ -33,3 +33,13 @@ type UpdatePriorityDecision struct {
 	Evidence        string    `json:"evidence" binding:"required,max=2000"`
 	RelatedCode     string    `json:"relatedCode" binding:"required,max=64"`
 }
+
+// ReviewPriorityDecision is the contract for the 待复核 queue. Reviewers either
+// reaffirm the last finalized level or submit a new observe/restrict/urgent
+// level, each with the review basis. ExpectedVersion rejects stale overwrites
+// when another reviewer just finished the same review.
+type ReviewPriorityDecision struct {
+	ExpectedVersion uint   `json:"expectedVersion" binding:"required"`
+	Level           string `json:"level" binding:"required,oneof=observe restrict urgent"`
+	Reason          string `json:"reason" binding:"required,min=3,max=1000"`
+}

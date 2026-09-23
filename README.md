@@ -36,12 +36,15 @@ docker compose down -v --remove-orphans
 | 桥梁资产 | `BridgeAsset` | `/api/bridges` | active, restricted, closed, retired |
 | 检查批次 | `InspectionRound` | `/api/inspections` | planned, running, review, completed |
 | 缺陷发现 | `DefectFinding` | `/api/defects` | new, verified, monitoring, mitigated, closed |
-| 优先级决定 | `PriorityDecision` | `/api/priorities` | draft → observe/restrict/urgent（终态） |
+| 优先级决定 | `PriorityDecision` | `/api/priorities` | draft → observe/restrict/urgent；定稿后关联缺陷变化自动进入 pending_review，复核后回到 observe/restrict/urgent |
 
 - JWT 登录和 viewer/operator/reviewer/admin 四级 RBAC，后端路由与前端守卫、导航和按钮保持一致。
 - 所有状态变化使用乐观锁并写入审计日志；审计查询仅 reviewer/admin 可见。
 - 优先级决定的每次创建、草稿更新和定稿均追加不可变版本，保留证据、状态、操作者、request ID 和完整快照。
-- 优先级只能由不同于拟制人的 reviewer/admin 定稿；observe/restrict/urgent 均为不可覆盖终态。
+- 优先级只能由不同于拟制人的 reviewer/admin 定稿；observe/restrict/urgent 在无新证据时不可覆盖。
+- 关联缺陷的风险等级或处置状态发生变化时，已定稿的优先级自动标记为 `pending_review`：旧等级保留在 `lastFinalizedLevel` 并持续展示，变化原因（前后风险/状态、触发时间）落库并追加 `flag_review` 版本。
+- 复核员通过 `POST /api/priorities/:id/review` 处理待复核队列：可维持原等级（`reaffirm`）或提交新等级（`level_change`），均须填写复核依据；复核同样受拟制人回避与乐观锁保护，旧 `expectedVersion` 返回 409，不会覆盖他人刚完成的复核。
+- 列表以待复核角标、原定等级和变化原因提示过期依据，详情抽屉展示完整字段、变化原因与全部历史版本（含每次复核依据）。
 - 请求 ID、结构化日志、全局错误映射和 Redis 分布式限流。
 - 提供脱敏运行配置、当前会话、审计汇总和单实体审计历史接口。
 - 业务工作台支持查询、新建、状态推进、风险标识及操作审计查看。
@@ -82,7 +85,7 @@ cd ../frontend && npm run typecheck && npm run build
 cd .. && docker compose config --quiet
 ```
 
-也可以从项目根目录执行 `./scripts/validate.sh`。脚本会先删除本项目旧卷，从空 PostgreSQL/Redis/MinIO 数据卷构建启动，验证四角色 RBAC、独立复核和三版证据链，并在成功或失败时关闭容器和删除卷。设置 `KEEP_RUNNING=1` 可在 API 验收后暂留服务供浏览器检查。
+也可以从项目根目录执行 `./scripts/validate.sh`。脚本会先删除本项目旧卷，从空 PostgreSQL/Redis/MinIO 数据卷构建启动，验证四角色 RBAC、独立复核、版本证据链和待复核闭环（自动标记、旧版本 409、维持/调整等级），并在成功或失败时关闭容器和删除卷。设置 `KEEP_RUNNING=1` 可在 API 验收后暂留服务供浏览器检查。
 
 ## 目录结构
 
@@ -124,6 +127,7 @@ cd .. && docker compose config --quiet
 |---|---|---|
 | `DefectState` | `new, verified, monitoring, mitigated, closed` | `backend/internal/constants/status.go`、`frontend/src/types/status.ts` |
 | `PriorityLevel` | `observe, restrict, urgent` | `backend/internal/constants/status.go`、`frontend/src/types/status.ts` |
+| `PriorityDecisionStatus` | `draft, observe, restrict, urgent, pending_review` | `backend/internal/constants/status.go`、`frontend/src/types/status.ts` |
 
 每个实体自己的完整迁移图同样位于 `backend/internal/constants/status.go`；页面使用的状态列表位于 `frontend/src/types/status.ts`。修改状态时必须同步两处并更新对应服务测试。
 

@@ -81,6 +81,25 @@ curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/priorities/$priority_id" -H "Aut
 
 locked_status=$(curl -sS -o /dev/null -w '%{http_code}' -X PUT "http://127.0.0.1:${BACKEND_PORT}/api/priorities/$priority_id" -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -d "$(printf '%s' "$update_payload" | jq '.expectedVersion = 3')")
 [ "$locked_status" = "422" ]
+
+# --- 待复核：关联缺陷状态变化自动标记，旧结论留档 ---
+curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/defects/1/transition" -H "Authorization: Bearer $operator_token" -H 'X-Request-ID: smoke-defect-transition' -H 'Content-Type: application/json' -d '{"status":"verified","expectedVersion":1,"reason":"现场确认缺陷状态推进"}' | jq -e '.data.status == "verified"' >/dev/null
+flagged=$(curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/priorities/$priority_id" -H "Authorization: Bearer $reviewer_token")
+printf '%s' "$flagged" | jq -e '.data.status == "pending_review" and .data.lastFinalizedLevel == "urgent" and .data.version == 4 and (.data.reviewReason | contains("new -> verified")) and (.data.revisions | length == 4) and (.data.revisions[3].kind == "flag_review")' >/dev/null
+
+# 待复核决定不能再走旧定稿接口
+old_route_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/api/priorities/$priority_id/transition" -H "Authorization: Bearer $reviewer_token" -H 'Content-Type: application/json' -d '{"status":"observe","expectedVersion":4,"reason":"尝试绕过复核接口"}')
+[ "$old_route_status" = "422" ]
+# 旧版本复核必须被乐观锁拒绝
+stale_review_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/api/priorities/$priority_id/review" -H "Authorization: Bearer $reviewer_token" -H 'Content-Type: application/json' -d '{"expectedVersion":3,"level":"observe","reason":"拿旧版本覆盖他人复核"}')
+[ "$stale_review_status" = "409" ]
+# operator 不能复核
+operator_review_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/api/priorities/$priority_id/review" -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -d '{"expectedVersion":4,"level":"urgent","reason":"操作员越权复核"}')
+[ "$operator_review_status" = "403" ]
+# 复核员维持原优先级，历史保留每次依据
+curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/priorities/$priority_id/review" -H "Authorization: Bearer $reviewer_token" -H 'X-Request-ID: smoke-reaffirm' -H 'Content-Type: application/json' -d '{"expectedVersion":4,"level":"urgent","reason":"复测数据仍超限，维持紧急处置"}' | jq -e '.data.status == "urgent" and .data.version == 5 and (.data.revisions[4].kind == "reaffirm") and (.data.reviewReason == null)' >/dev/null
+curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/priorities?status=pending_review" -H "Authorization: Bearer $reviewer_token" | jq -e '[.data[].status] | all(. == "pending_review")' >/dev/null
+
 curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/audit-summary?windowHours=24" -H "Authorization: Bearer $reviewer_token" | jq -e '.data.total >= 3 and .data.transitions >= 1' >/dev/null
 
 docker compose ps

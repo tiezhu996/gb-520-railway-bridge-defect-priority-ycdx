@@ -16,6 +16,13 @@ export interface DomainRecord {
   evidence: string;
   relatedCode: string;
   preparedBy?: string;
+  lastFinalizedLevel?: string;
+  reviewReason?: string;
+  reviewTriggeredAt?: string;
+  relatedRiskBefore?: string;
+  relatedRiskAfter?: string;
+  relatedStateBefore?: string;
+  relatedStateAfter?: string;
   revisions?: PriorityDecisionRevision[];
   createdAt: string;
   updatedAt: string;
@@ -25,6 +32,7 @@ export interface PriorityDecisionRevision {
   id: number;
   priorityDecisionId: number;
   version: number;
+  kind: string;
   status: string;
   evidence: string;
   reason: string;

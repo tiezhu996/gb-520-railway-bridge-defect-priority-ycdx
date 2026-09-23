@@ -15,6 +15,7 @@ type PriorityDecisionRepository interface {
 	Get(context.Context, uint) (model.PriorityDecision, error)
 	CreateWithRevision(context.Context, *model.PriorityDecision, *model.PriorityDecisionRevision) error
 	UpdateWithRevision(context.Context, uint, uint, *model.PriorityDecision, *model.PriorityDecisionRevision) error
+	ListReviewableByRelatedCode(context.Context, string) ([]model.PriorityDecision, error)
 	Delete(context.Context, uint) error
 	CountByStatus(context.Context) (map[string]int64, error)
 }
@@ -84,6 +85,17 @@ func (r *priorityDecisionRepository) UpdateWithRevision(ctx context.Context, id,
 }
 func (r *priorityDecisionRepository) Delete(ctx context.Context, id uint) error {
 	return r.store.Delete(ctx, id)
+}
+
+// ListReviewableByRelatedCode returns finalized or pending_review decisions
+// linked to a defect code. Drafts have no finalized conclusion to invalidate,
+// and soft-deleted rows are excluded by GORM automatically.
+func (r *priorityDecisionRepository) ListReviewableByRelatedCode(ctx context.Context, relatedCode string) ([]model.PriorityDecision, error) {
+	items := make([]model.PriorityDecision, 0)
+	err := r.db.WithContext(ctx).
+		Where("related_code = ? AND status <> ?", relatedCode, model.PriorityDecisionInitialStatus).
+		Find(&items).Error
+	return items, err
 }
 func (r *priorityDecisionRepository) CountByStatus(ctx context.Context) (map[string]int64, error) {
 	return r.store.CountByStatus(ctx)

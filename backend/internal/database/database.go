@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -209,6 +210,7 @@ func seedPriorityDecision(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	now := time.Now().UTC()
+	flaggedAt := now.Add(-2 * time.Hour)
 	items := []model.PriorityDecision{
 
 		{BaseModel: model.BaseModel{Code: "PD-001", Name: "优先级决定示例一", Status: "draft", Version: 1,
@@ -219,12 +221,15 @@ func seedPriorityDecision(ctx context.Context, db *gorm.DB) error {
 		{BaseModel: model.BaseModel{Code: "PD-002", Name: "优先级决定示例二", Status: "observe", Version: 2,
 			Description: "用于启动验证和主要流程演示的优先级决定记录"}, Facility: "铁路桥梁缺陷处置优先级区域2", Owner: "质量复核组",
 			Category: "重点", RiskLevel: "medium", MetricValue: 25.0, MetricUnit: "%",
-			EffectiveAt: now.Add(3 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "DF-002", PreparedBy: "operator"},
+			EffectiveAt: now.Add(3 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "DF-002", PreparedBy: "operator",
+			LastFinalizedLevel: "observe"},
 
-		{BaseModel: model.BaseModel{Code: "PD-003", Name: "优先级决定示例三", Status: "restrict", Version: 2,
+		{BaseModel: model.BaseModel{Code: "PD-003", Name: "优先级决定示例三", Status: "pending_review", Version: 3,
 			Description: "用于启动验证和主要流程演示的优先级决定记录"}, Facility: "铁路桥梁缺陷处置优先级区域3", Owner: "安全主管组",
 			Category: "复核", RiskLevel: "high", MetricValue: 37.5, MetricUnit: "score",
-			EffectiveAt: now.Add(6 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "DF-003", PreparedBy: "operator"},
+			EffectiveAt: now.Add(6 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "DF-003", PreparedBy: "operator",
+			LastFinalizedLevel: "restrict", ReviewReason: "关联缺陷 DF-003 处置状态 verified -> monitoring",
+			ReviewTriggeredAt: &flaggedAt, RelatedStateBefore: "verified", RelatedStateAfter: "monitoring"},
 	}
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for index := range items {
@@ -233,15 +238,24 @@ func seedPriorityDecision(ctx context.Context, db *gorm.DB) error {
 				return err
 			}
 			revisions := []model.PriorityDecisionRevision{{
-				PriorityDecisionID: item.ID, Version: 1, Status: "draft", Evidence: item.Evidence,
+				PriorityDecisionID: item.ID, Version: 1, Kind: model.RevisionKindDraft, Status: "draft", Evidence: item.Evidence,
 				Reason: "seeded decision draft", Actor: "operator", RequestID: fmt.Sprintf("seed-%s-create", item.Code),
-				Snapshot: fmt.Sprintf(`{"code":%q,"status":"draft","evidence":%q}`, item.Code, item.Evidence), CreatedAt: now,
+				Snapshot: prioritySeedSnapshot(item, "draft", now), CreatedAt: now,
 			}}
 			if item.Status != "draft" {
 				revisions = append(revisions, model.PriorityDecisionRevision{
-					PriorityDecisionID: item.ID, Version: item.Version, Status: item.Status, Evidence: item.Evidence,
+					PriorityDecisionID: item.ID, Version: 2, Kind: model.RevisionKindFinalize,
+					Status: item.LastFinalizedLevel, Evidence: item.Evidence,
 					Reason: "seeded independent review", Actor: "reviewer", RequestID: fmt.Sprintf("seed-%s-review", item.Code),
-					Snapshot: fmt.Sprintf(`{"code":%q,"status":%q,"evidence":%q}`, item.Code, item.Status, item.Evidence), CreatedAt: now.Add(time.Minute),
+					Snapshot: prioritySeedSnapshot(item, item.LastFinalizedLevel, now.Add(time.Minute)), CreatedAt: now.Add(time.Minute),
+				})
+			}
+			if item.Status == model.PriorityDecisionPendingReview {
+				revisions = append(revisions, model.PriorityDecisionRevision{
+					PriorityDecisionID: item.ID, Version: item.Version, Kind: model.RevisionKindFlagReview,
+					Status: model.PriorityDecisionPendingReview, Evidence: item.Evidence,
+					Reason: item.ReviewReason, Actor: "operator", RequestID: fmt.Sprintf("seed-%s-flag", item.Code),
+					Snapshot: prioritySeedSnapshot(item, model.PriorityDecisionPendingReview, flaggedAt), CreatedAt: flaggedAt,
 				})
 			}
 			if err := tx.Create(&revisions).Error; err != nil {
@@ -250,4 +264,15 @@ func seedPriorityDecision(ctx context.Context, db *gorm.DB) error {
 		}
 		return nil
 	})
+}
+
+func prioritySeedSnapshot(item *model.PriorityDecision, status string, at time.Time) string {
+	payload := map[string]any{
+		"code": item.Code, "status": status, "evidence": item.Evidence, "createdAt": at,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "{}"
+	}
+	return string(raw)
 }

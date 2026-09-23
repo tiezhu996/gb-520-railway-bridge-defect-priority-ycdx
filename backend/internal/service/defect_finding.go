@@ -12,6 +12,14 @@ import (
 	"github.com/blueship581/railway-bridge-defect-priority/backend/internal/repository"
 )
 
+// PriorityReviewGateway is the defect service's outbound port for flagging
+// finalized priority decisions when linked defect evidence changes. The
+// concrete priority decision service satisfies it, which keeps the dependency
+// pointed from defect toward the priority aggregate without an import cycle.
+type PriorityReviewGateway interface {
+	FlagRelatedForReview(context.Context, model.ReviewTrigger, string, string) (int, error)
+}
+
 type DefectFindingService interface {
 	List(context.Context, dto.PageQuery) (repository.Page[model.DefectFinding], error)
 	Get(context.Context, uint) (model.DefectFinding, error)
@@ -25,10 +33,11 @@ type DefectFindingService interface {
 type defectFindingService struct {
 	repository repository.DefectFindingRepository
 	security   SecurityService
+	priorities PriorityReviewGateway
 }
 
-func NewDefectFindingService(repo repository.DefectFindingRepository, security SecurityService) DefectFindingService {
-	return &defectFindingService{repository: repo, security: security}
+func NewDefectFindingService(repo repository.DefectFindingRepository, security SecurityService, priorities PriorityReviewGateway) DefectFindingService {
+	return &defectFindingService{repository: repo, security: security, priorities: priorities}
 }
 
 func (s *defectFindingService) List(ctx context.Context, query dto.PageQuery) (repository.Page[model.DefectFinding], error) {
@@ -69,6 +78,7 @@ func (s *defectFindingService) Update(ctx context.Context, id uint, input dto.Up
 	if err := validateDefectFindingBusinessFields(current.Code, input.Name, input.Facility, input.Owner); err != nil {
 		return model.DefectFinding{}, err
 	}
+	riskBefore := current.RiskLevel
 	current.Name = strings.TrimSpace(input.Name)
 	current.Description = strings.TrimSpace(input.Description)
 	current.Facility = strings.TrimSpace(input.Facility)
@@ -86,6 +96,16 @@ func (s *defectFindingService) Update(ctx context.Context, id uint, input dto.Up
 		return model.DefectFinding{}, fmt.Errorf("update 缺陷发现: %w", err)
 	}
 	_ = s.security.Audit(ctx, actor, requestID, "update", "DefectFinding", id, current.Status, current.Status, "updated business fields")
+	// A changed risk level invalidates finalized conclusions linked by code.
+	if riskBefore != current.RiskLevel {
+		if err := s.flagLinkedDecisions(ctx, current, model.ReviewTrigger{
+			DefectID: current.ID, DefectCode: current.Code,
+			RiskBefore: riskBefore, RiskAfter: current.RiskLevel,
+			StateBefore: current.Status, StateAfter: current.Status,
+		}, actor, requestID); err != nil {
+			return model.DefectFinding{}, err
+		}
+	}
 	return s.repository.Get(ctx, id)
 }
 
@@ -108,7 +128,26 @@ func (s *defectFindingService) Transition(ctx context.Context, id uint, input dt
 	if err := s.security.Audit(ctx, actor, requestID, "transition", "DefectFinding", id, before, target, input.Reason); err != nil {
 		return model.DefectFinding{}, fmt.Errorf("persist transition audit: %w", err)
 	}
+	// A changed disposal state requires any finalized priority linked to this
+	// defect to be re-reviewed against current evidence.
+	if err := s.flagLinkedDecisions(ctx, current, model.ReviewTrigger{
+		DefectID: current.ID, DefectCode: current.Code,
+		RiskBefore: current.RiskLevel, RiskAfter: current.RiskLevel,
+		StateBefore: before, StateAfter: target,
+	}, actor, requestID); err != nil {
+		return model.DefectFinding{}, err
+	}
 	return s.repository.Get(ctx, id)
+}
+
+func (s *defectFindingService) flagLinkedDecisions(ctx context.Context, defect model.DefectFinding, trigger model.ReviewTrigger, actor, requestID string) error {
+	if s.priorities == nil {
+		return nil
+	}
+	if _, err := s.priorities.FlagRelatedForReview(ctx, trigger, actor, requestID); err != nil {
+		return fmt.Errorf("mark linked priority decisions for review after 缺陷发现 %s change: %w", defect.Code, err)
+	}
+	return nil
 }
 
 func (s *defectFindingService) Delete(ctx context.Context, id uint, actor, requestID string) error {

@@ -7,19 +7,32 @@ export function createEntityStore(id: string) {
     state: () => ({ items: [] as DomainRecord[], meta: { page: 1, pageSize: 20, total: 0 } as PageMeta, loading: false, error: '' }),
     actions: {
       async load(path: string, search = '') { this.loading = true; this.error = ''; try { const result = await request<DomainRecord[]>(`/${path}?page=1&pageSize=20&search=${encodeURIComponent(search)}`); this.items = result.data; this.meta = result.meta || { page: 1, pageSize: 20, total: result.data.length }; } catch (error) { this.error = error instanceof Error ? error.message : String(error); } finally { this.loading = false; } },
-		async createRecord(path: string, input: Partial<DomainRecord>): Promise<boolean> {
-			this.loading = true; this.error = '';
-			try { await request<DomainRecord>(`/${path}`, { method: 'POST', body: JSON.stringify(input) }); await this.load(path); return true; }
-			catch (error) { this.error = error instanceof Error ? error.message : String(error); return false; }
-			finally { this.loading = false; }
-		},
-		async transition(path: string, item: DomainRecord, status: string): Promise<boolean> {
-			this.loading = true; this.error = '';
-			const reason = path === 'priorities' ? '独立复核人确认桥梁缺陷处置优先级' : '前端工作台人工确认';
-			try { await request<DomainRecord>(`/${path}/${item.id}/transition`, { method: 'POST', body: JSON.stringify({ status, expectedVersion: item.version, reason }) }); await this.load(path); return true; }
-			catch (error) { this.error = error instanceof Error ? error.message : String(error); return false; }
-			finally { this.loading = false; }
-		},
+      async createRecord(path: string, input: Partial<DomainRecord>): Promise<boolean> {
+        this.loading = true; this.error = '';
+        try { await request<DomainRecord>(`/${path}`, { method: 'POST', body: JSON.stringify(input) }); await this.load(path); return true; }
+        catch (error) { this.error = error instanceof Error ? error.message : String(error); return false; }
+        finally { this.loading = false; }
+      },
+      async transition(path: string, item: DomainRecord, status: string): Promise<boolean> {
+        this.loading = true; this.error = '';
+        const reason = path === 'priorities' ? '独立复核人确认桥梁缺陷处置优先级' : '前端工作台人工确认';
+        try { await request<DomainRecord>(`/${path}/${item.id}/transition`, { method: 'POST', body: JSON.stringify({ status, expectedVersion: item.version, reason }) }); await this.load(path); return true; }
+        catch (error) { this.error = error instanceof Error ? error.message : String(error); return false; }
+        finally { this.loading = false; }
+      },
+      // Resolve a pending_review priority decision by reaffirming the last
+      // finalized level or submitting a new one. The server-side optimistic
+      // lock turns a stale version into an error the reviewer can see.
+      async reviewPriority(path: string, item: DomainRecord, level: string, reason: string): Promise<boolean> {
+        this.loading = true; this.error = '';
+        try {
+          await request<DomainRecord>(`/${path}/${item.id}/review`, { method: 'POST', body: JSON.stringify({ expectedVersion: item.version, level, reason }) });
+          await this.load(path);
+          return true;
+        }
+        catch (error) { this.error = error instanceof Error ? error.message : String(error); return false; }
+        finally { this.loading = false; }
+      },
     },
   });
 }
